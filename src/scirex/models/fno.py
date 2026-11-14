@@ -13,7 +13,7 @@ from typing import Any
 
 import flax.linen as nn
 
-from ..layers.blocks.fno_block import FNOBlocks
+from ..layers.blocks.fno_block import FNOBlocks, legacy_norm
 from ..layers.blocks.spectral_convolution import SpectralConv
 from ..layers.common.channel_mlp import ChannelMLP
 from ..layers.common.complex import ComplexValued
@@ -84,7 +84,8 @@ class FNO(BaseModel, name="FNO"):
         Default: "grid"
     non_linearity : nn.Module, optional
         Non-Linear activation function module to use. Default: nn.gelu
-    norm : Literal["ada_in", "group_norm", "instance_norm"], optional
+    norm : Literal["ada_in", "group_norm", "instance_norm", "batch_norm",
+            "group_norm_legacy", "batch_norm_legacy"], optional
         Normalization layer to use. Options: "ada_in", "group_norm",
         "instance_norm", "batch_norm", None. Default: None. The "group_norm_legacy"
         and "batch_norm_legacy" variants load checkpoints trained with ScireX
@@ -181,6 +182,19 @@ class FNO(BaseModel, name="FNO"):
         Equations" (2021). ICLR 2021, https://arxiv.org/pdf/2010.08895.
 
     """
+
+    # 0.2.0: norm "group_norm"/"batch_norm" became per channel (see
+    # _migrate_init_kwargs)
+    _version = "0.2.0"
+
+    @classmethod
+    def _migrate_init_kwargs(
+        cls, init_kwargs: dict[str, Any], version: str | None
+    ) -> dict[str, Any]:
+        """A 0.1.0 (ScireX 1.0.0) checkpoint's `norm` maps to its legacy layout."""
+        if version in (None, "0.1.0") and "norm" in init_kwargs:
+            init_kwargs = {**init_kwargs, "norm": legacy_norm(init_kwargs["norm"])}
+        return init_kwargs
 
     # Flax dataclass fields (all FNO constructor parameters).
     # in_channels/out_channels/hidden_channels must precede n_modes because the

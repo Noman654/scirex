@@ -20,6 +20,15 @@ from ..common.skip_connections import skip_connection
 from .spectral_convolution import SpectralConv
 
 
+#: The 1.0.0 meaning of each norm whose parameter layout changed afterwards.
+LEGACY_NORMS = {"group_norm": "group_norm_legacy", "batch_norm": "batch_norm_legacy"}
+
+
+def legacy_norm(norm: Any) -> Any:
+    """The `norm` value that reproduces what `norm` meant in ScireX 1.0.0."""
+    return LEGACY_NORMS.get(norm, norm) if isinstance(norm, str) else norm
+
+
 class FNOBlocks(nn.Module):
     """FNOBlocks implements a sequence of Fourier layers.
 
@@ -56,13 +65,17 @@ class FNOBlocks(nn.Module):
     stabilizer : Literal["tanh"], optional
         Stabilizing module to use between certain layers. Options: "tanh", None,
         by default None
-    norm : Literal["ada_in", "group_norm", "instance_norm", "batch_norm"], optional
+    norm : Literal["ada_in", "group_norm", "instance_norm", "batch_norm",
+            "group_norm_legacy", "batch_norm_legacy"], optional
         Normalization layer to use. Options: "ada_in", "group_norm", "instance_norm",
         "batch_norm", None, by default None. "group_norm" and "batch_norm" have one
-        scale and bias per channel (axis 1). "group_norm_legacy" and
-        "batch_norm_legacy" reproduce the ScireX 1.0.0 layout, which normalised
-        over the last spatial axis and so ties the parameters to that axis's size;
-        they exist only to load checkpoints trained with 1.0.0.
+        scale and bias (and, for batch_norm, one running mean and variance) per
+        channel (axis 1). "group_norm_legacy" and "batch_norm_legacy" reproduce
+        the ScireX 1.0.0 layout, which indexed these by the last spatial axis and
+        so tied them to that axis's size: for group_norm only the affine was
+        per column (its statistics, over all channels and positions, were
+        already right); batch_norm also took its statistics per column. They
+        exist to run models built or trained with 1.0.0.
     ada_in_features : int, optional
         Number of features for adaptive instance norm above, by default None
     preactivation : bool, optional
@@ -370,12 +383,18 @@ class FNOBlocks(nn.Module):
     def _check_norm_layout(self, norm_idx: int, n_channels: int) -> None:
         """Raise a clear error for norm variables saved in the 1.0.0 layout.
 
-        ScireX 1.0.0 gave "group_norm" / "batch_norm" one scale, bias (and batch
-        statistic) per entry of the last spatial axis. Loading such a checkpoint
-        into the per-channel layout would otherwise fail deep inside flax with
-        an unrelated shape error. Nothing is checked during `init`.
+        ScireX 1.0.0 gave "group_norm" / "batch_norm" one scale and bias (and,
+        for batch_norm, one running mean and variance) per entry of the last
+        spatial axis. Applying such variables with the per-channel layout would
+        otherwise fail deep inside flax with an unrelated shape error. Nothing
+        is checked during `init`.
         """
         name = f"_norm_{norm_idx}"
+        indexed = (
+            "scale and bias"
+            if self.norm == "group_norm"
+            else "batch statistics, scale and bias"
+        )
         for collection in ("params", "batch_stats"):
             tree = self.variables.get(collection, {}).get(name)
             if tree is None:
@@ -387,9 +406,9 @@ class FNOBlocks(nn.Module):
                         f"shape {jnp.shape(leaf)}, but norm='{self.norm}' expects "
                         f"one entry per channel, shape ({n_channels},). These "
                         "variables were most likely trained with ScireX 1.0.0, "
-                        f"whose '{self.norm}' normalised over the last spatial "
-                        "axis instead of the channel axis. To load them, build "
-                        f"the model with norm='{self.norm}_legacy' "
+                        f"whose '{self.norm}' indexed its {indexed} by the last "
+                        "spatial axis instead of the channel axis. To load "
+                        f"them, build the model with norm='{self.norm}_legacy' "
                         f"(fno_norm='{self.norm}_legacy' for GINO)."
                     )
 

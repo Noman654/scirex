@@ -14,7 +14,7 @@ import flax.linen as nn
 import jax.numpy as jnp
 import numpy as np
 
-from ..layers.blocks.fno_block import FNOBlocks
+from ..layers.blocks.fno_block import FNOBlocks, legacy_norm
 from ..layers.blocks.gno_block import GNOBlock
 from ..layers.blocks.gno_weighting_functions import dispatch_weighting_fn
 from ..layers.blocks.spectral_convolution import SpectralConv
@@ -70,6 +70,21 @@ class GINO(BaseModel, name="gino"):
         Nabian, M., Stadler, M., Hundt, C., Azizzadenesheli, K., Anandkumar, A. (2023)
         Geometry-Informed Neural Operator for Large-Scale 3D PDEs. NeurIPS 2023.
     """
+
+    # 0.2.0: fno_norm "group_norm"/"batch_norm" became per channel (see
+    # _migrate_init_kwargs)
+    _version = "0.2.0"
+
+    @classmethod
+    def _migrate_init_kwargs(
+        cls, init_kwargs: dict[str, Any], version: str | None
+    ) -> dict[str, Any]:
+        """A 0.1.0 (ScireX 1.0.0) checkpoint's `fno_norm` maps to its legacy
+        layout."""
+        if version in (None, "0.1.0") and "fno_norm" in init_kwargs:
+            norm = legacy_norm(init_kwargs["fno_norm"])
+            init_kwargs = {**init_kwargs, "fno_norm": norm}
+        return init_kwargs
 
     in_channels: int
     out_channels: int

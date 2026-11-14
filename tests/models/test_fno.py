@@ -35,10 +35,13 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
+from scirex._internal.serialization import load_msgpack, save_msgpack
 from scirex.layers.common.embeddings import GridEmbedding2D, GridEmbeddingND
 from scirex.models.fno import FNO, partialclass
+from tests import tolerances
 
 # reference CPU-branch sizes
 S = 12
@@ -501,3 +504,51 @@ def test_fno_applies_after_checkpoint_round_trip(tmp_path) -> None:
     model.save_checkpoint(tmp_path, "c", params)
     loaded, restored = FNO.from_checkpoint(tmp_path, "c", params)
     assert bool(jnp.allclose(loaded.apply(restored, x), model.apply(params, x)))
+
+
+# ---------------------------------------------------------------------------
+# Checkpoints from ScireX 1.0.0 (FNO version 0.1.0): norm layout migration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_fno_migrates_0_1_0_norm(norm: str) -> None:
+    """A 0.1.0 checkpoint's norm maps to its legacy layout; others are kept."""
+    assert FNO._version == "0.2.0"
+    old = {"norm": norm, "n_layers": 2}
+    assert FNO._migrate_init_kwargs(old, "0.1.0") == {
+        "norm": f"{norm}_legacy",
+        "n_layers": 2,
+    }
+    assert FNO._migrate_init_kwargs(old, "0.2.0") == old
+    assert FNO._migrate_init_kwargs({"norm": "ada_in"}, "0.1.0") == {"norm": "ada_in"}
+
+
+def test_fno_from_checkpoint_loads_a_1_0_0_group_norm_checkpoint(
+    tmp_path: Any,
+) -> None:
+    """A checkpoint saved by 1.0.0 (version 0.1.0, norm="group_norm", the old
+    parameter layout) loads and gives the outputs it gave then."""
+    kwargs = dict(
+        in_channels=1, out_channels=1, hidden_channels=6, n_modes=(4, 4), n_layers=1
+    )
+    x = jax.random.normal(jax.random.PRNGKey(0), (2, 1, 10, 14))
+    legacy = FNO(**kwargs, norm="group_norm_legacy")
+    params = legacy.init(jax.random.PRNGKey(1), x)
+    expected = np.asarray(legacy.apply(params, x))
+
+    FNO(**kwargs, norm="group_norm").save_checkpoint(tmp_path, "old", params)
+    meta_path = tmp_path / "old_metadata.msgpack"
+    meta = load_msgpack(meta_path)
+    assert meta["_version"] == "0.2.0" and meta["norm"] == "group_norm"
+    save_msgpack({**meta, "_version": "0.1.0"}, meta_path)
+
+    with pytest.warns(UserWarning, match="version 0.1.0"):
+        model, loaded = FNO.from_checkpoint(tmp_path, "old", params)
+    assert model.norm == "group_norm_legacy"
+    out = np.asarray(model.apply(loaded, x))
+    np.testing.assert_allclose(out, expected, rtol=0, atol=tolerances.atol(1e-6))
+
+    # a checkpoint of the current version keeps its norm
+    FNO(**kwargs, norm="group_norm").save_checkpoint(tmp_path, "new", params)
+    assert FNO.from_checkpoint(tmp_path, "new", params)[0].norm == "group_norm"

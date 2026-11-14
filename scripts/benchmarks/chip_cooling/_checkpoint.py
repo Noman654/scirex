@@ -17,7 +17,9 @@ The last epoch's weights are saved: the benchmark has no validation split, so
 no epoch is chosen by its test error.
 
 ``config.json`` is written last, so a directory without it is an unfinished
-run.
+run. Its ``format`` is ``CHECKPOINT_FORMAT``; a ``config.json`` without one is
+format 1 (ScireX 1.0.0, including the published checkpoints), whose GINO
+``fno_norm="group_norm"`` meant the layout now called ``"group_norm_legacy"``.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from typing import Any
 import jax
 import numpy as np
 
+from scirex.layers.blocks.fno_block import legacy_norm
 from scirex.utils import count_model_params
 from scripts.benchmarks._ckpt import load_params, resolve_weights_path, save_params
 from scripts.benchmarks.chip_cooling._config import (
@@ -39,6 +42,10 @@ from scripts.benchmarks.chip_cooling._config import (
     RunConfig,
     run_config_from_dict,
 )
+
+
+#: written to ``config.json``; 2 = FNO norms per channel (after ScireX 1.0.0)
+CHECKPOINT_FORMAT = 2
 
 
 def provenance() -> dict:
@@ -101,6 +108,7 @@ def save_checkpoint(
     save_params(jax.device_get(params), run_dir / "params.msgpack")
     (run_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n")
     config = dict(
+        format=CHECKPOINT_FORMAT,
         run=asdict(run),
         n_params=int(count_model_params(params)),
         normalisation=normalisation,
@@ -122,7 +130,17 @@ def is_complete(run_dir: Path) -> bool:
 def load_config(run_dir: Path) -> tuple[RunConfig, dict]:
     """The run and the raw ``config.json`` of a checkpoint."""
     config = json.loads((Path(run_dir) / "config.json").read_text())
-    return run_config_from_dict(config["run"]), config
+    return run_config_from_dict(migrate_run(config)), config
+
+
+def migrate_run(config: dict) -> dict:
+    """``config["run"]``, with a format-1 GINO ``fno_norm`` mapped to the layout
+    it was trained with (``"group_norm"`` -> ``"group_norm_legacy"``)."""
+    run = config["run"]
+    arch = run.get("arch", {})
+    if config.get("format", 1) < 2 and "fno_norm" in arch:
+        run = {**run, "arch": {**arch, "fno_norm": legacy_norm(arch["fno_norm"])}}
+    return run
 
 
 def load_params_into(run_dir: Path, template: Any) -> Any:

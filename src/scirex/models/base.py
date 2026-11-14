@@ -121,7 +121,8 @@ class BaseModel(nn.Module):
     -----
     Model can be versioned using the _version class attribute.
     This can be used for sanity check when loading models from checkpoints to verify the
-    model hasn't been updated since.
+    model hasn't been updated since. When a version changes what the stored constructor
+    arguments mean, override `_migrate_init_kwargs` to map them to the current ones.
     """
 
     _models: ClassVar[dict[str, type["BaseModel"]]] = {}
@@ -295,6 +296,16 @@ class BaseModel(nn.Module):
         return jax.tree_util.tree_map(jnp.asarray, restored)
 
     @classmethod
+    def _migrate_init_kwargs(
+        cls, init_kwargs: dict[str, Any], version: str | None
+    ) -> dict[str, Any]:
+        """Constructor arguments stored by `version` of this class, translated to
+        the current version. Called by `from_checkpoint`; returns them unchanged
+        unless a subclass overrides it.
+        """
+        return init_kwargs
+
+    @classmethod
     def from_checkpoint(
         cls, save_folder: str | Path, save_name: str, params_target: Mapping[str, Any]
     ) -> tuple["BaseModel", dict[str, Any]]:
@@ -326,6 +337,7 @@ class BaseModel(nn.Module):
             )
 
         init_kwargs.pop("_name", None)
+        init_kwargs = cls._migrate_init_kwargs(init_kwargs, version)
 
         if "args" in init_kwargs:
             init_args = init_kwargs.pop("args")

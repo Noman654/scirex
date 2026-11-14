@@ -118,7 +118,9 @@ def test_BatchNorm_per_channel(n_dim: int) -> None:
     axes = (0, *range(2, x.ndim))
     tol = tolerances.atol(1e-5)
     assert jnp.allclose(jnp.mean(out, axis=axes), 0.0, rtol=0, atol=tol)
-    assert jnp.allclose(jnp.var(out, axis=axes), 1.0, rtol=0, atol=1e-3)
+    # float32 cancellation in the variance of the offset-7, spread-0.2 channel
+    var_tol = tolerances.atol(5e-3)
+    assert jnp.allclose(jnp.var(out, axis=axes), 1.0, rtol=0, atol=var_tol)
     # same variables at another resolution
     y = jax.random.normal(key, (4, 3, *spatial[:-1], spatial[-1] + 3))
     out_y, _ = mod.apply(variables, y, mutable=["batch_stats"])

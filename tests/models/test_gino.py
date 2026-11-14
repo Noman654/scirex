@@ -251,12 +251,65 @@ def test_gino_group_norm_legacy_layout() -> None:
     assert all(leaf.shape == (LATENT_DENSITY,) for leaf in norm_leaves)
 
 
-def test_gino_presets_keep_published_group_norm_layout() -> None:
-    """The presets behind the published checkpoints keep the 1.0.0 layout."""
-    from scirex.config import GINODarcy2d, GINOPoisson2d
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_gino_migrates_0_1_0_fno_norm(norm: str) -> None:
+    """from_checkpoint maps a 0.1.0 (ScireX 1.0.0) fno_norm to its legacy layout."""
+    assert GINO._version == "0.2.0"
+    old = {"fno_norm": norm, "fno_n_layers": 2}
+    assert GINO._migrate_init_kwargs(old, "0.1.0") == {
+        "fno_norm": f"{norm}_legacy",
+        "fno_n_layers": 2,
+    }
+    assert GINO._migrate_init_kwargs(old, "0.2.0") == old
+    assert GINO._migrate_init_kwargs({"fno_norm": None}, "0.1.0") == {
+        "fno_norm": None
+    }
 
-    assert GINODarcy2d().fno_norm == "group_norm_legacy"
-    assert GINOPoisson2d().fno_norm == "group_norm_legacy"
+
+@pytest.mark.parametrize("preset", ["GINODarcy2d", "GINOPoisson2d"])
+def test_gino_presets_keep_published_group_norm_layout(preset: str) -> None:
+    """The released presets still build the 1.0.0 norm parameters: one per entry
+    of the last latent axis (10 here), not per FNO channel (8).
+
+    The preset is shrunk (widths, modes, layers) to keep the test fast; its norm
+    setting is what is under test.
+    """
+    import inspect
+
+    import scirex.config
+
+    config = getattr(scirex.config, preset)().to_dict()
+    config["in_channels"] = config.pop("data_channels")
+    fields = inspect.signature(GINO).parameters
+    config = {k: v for k, v in config.items() if k in fields}
+    config.update(
+        fno_hidden_channels=8,
+        fno_n_layers=1,
+        fno_n_modes=[4, 4],
+        in_gno_channel_mlp_hidden_layers=[8],
+        out_gno_channel_mlp_hidden_layers=[8],
+        gno_use_torch_scatter=False,
+    )
+    grid = jnp.stack(
+        jnp.meshgrid(jnp.linspace(0, 1, 6), jnp.linspace(0, 1, 10), indexing="ij"),
+        axis=-1,
+    )[None]
+    points = jax.random.uniform(jax.random.PRNGKey(0), (1, N_IN, 2))
+    inputs = dict(
+        input_geom=points,
+        latent_queries=grid,
+        output_queries=points,
+        x=jnp.ones((1, N_IN, config["in_channels"])),
+    )
+
+    def norm_shapes(norm: str | None) -> set[tuple[int, ...]]:
+        model = GINO(**(config if norm is None else dict(config, fno_norm=norm)))
+        params = model.init(jax.random.PRNGKey(1), **inputs)
+        flat = flatten_dict(params)
+        return {v.shape for k, v in flat.items() if any("_norm_" in p for p in k)}
+
+    assert norm_shapes(None) == {(10,)}
+    assert norm_shapes("group_norm") == {(8,)}
 
 
 @pytest.mark.skip(

@@ -14,7 +14,7 @@ os.environ.setdefault("MPLBACKEND", "Agg")
 
 import json  # noqa: E402
 import sys  # noqa: E402
-from dataclasses import replace  # noqa: E402
+from dataclasses import asdict, replace  # noqa: E402
 from pathlib import Path  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -29,7 +29,11 @@ from scirex.data.datasets.chipcooling import (  # noqa: E402
 )
 from scirex.utils import count_model_params  # noqa: E402
 from scripts.benchmarks.chip_cooling import infer  # noqa: E402
-from scripts.benchmarks.chip_cooling._checkpoint import is_complete  # noqa: E402
+from scripts.benchmarks.chip_cooling._checkpoint import (  # noqa: E402
+    CHECKPOINT_FORMAT,
+    is_complete,
+    load_config,
+)
 from scripts.benchmarks.chip_cooling._config import PROTOCOL, RUNS  # noqa: E402
 from scripts.benchmarks.chip_cooling._data import (  # noqa: E402
     grid_split,
@@ -167,6 +171,8 @@ def test_train_checkpoint_infer_round_trip(
     run_dir = tmp_path / "ckpt" / model
     train_one(run, raw, run_dir, SMALL, tmp_path / "cache")
     assert is_complete(run_dir)
+    config = json.loads((run_dir / "config.json").read_text())
+    assert config["format"] == CHECKPOINT_FORMAT
 
     ck = infer.load_run(run_dir, raw, SMALL, tmp_path / "cache")
     assert ck["run"] == run
@@ -191,6 +197,18 @@ def test_train_checkpoint_infer_round_trip(
     assert {k: written[k] for k in ck["history"]} == ck["history"]
     assert written["test"]["MAE"] == metrics["MAE"]
     assert written["inference_provenance"]["checkpoints"][0]["sha256"]["params.msgpack"]
+
+
+def test_load_config_maps_format_1_group_norm_to_legacy(tmp_path: Path) -> None:
+    """A config.json without a format (ScireX 1.0.0, as published) is rebuilt with
+    the norm layout it was trained with; a current one is left alone."""
+    run = replace(RUNS["gino"], arch=dict(RUNS["gino"].arch, fno_norm="group_norm"))
+    stored = json.loads(json.dumps(asdict(run)))
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"run": stored}))
+    assert load_config(tmp_path)[0].arch["fno_norm"] == "group_norm_legacy"
+    path.write_text(json.dumps({"format": CHECKPOINT_FORMAT, "run": stored}))
+    assert load_config(tmp_path)[0].arch["fno_norm"] == "group_norm"
 
 
 def test_checkpoint_refuses_a_different_split(raw: dict, tmp_path: Path) -> None:

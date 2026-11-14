@@ -172,7 +172,16 @@ class GINOSmall3d(GINOConfig):
 
 
 class GINOPoisson2d(GINOConfig):
-    """GINO preset for the 2d Poisson problem on the unit square."""
+    """GINO preset for the 2d Poisson problem on the unit square.
+
+    `fno_norm` is `"group_norm_legacy"`, the layout `"group_norm"` had in ScireX
+    1.0.0 (one scale and bias per entry of the last latent axis rather than per
+    channel). The API policy does not let a minor release change "the names or
+    shapes of the parameters a released model creates"
+    (`doc/dev_guide/api_policy.md`), which includes the model this preset builds,
+    so the preset keeps it; set `fno_norm="group_norm"` for a per-channel,
+    resolution-independent norm.
+    """
 
     data_channels: int = 3
     out_channels: int = 1
@@ -201,8 +210,6 @@ class GINOPoisson2d(GINOConfig):
     fno_n_layers: int = 4
     fno_use_channel_mlp: bool = True
     fno_channel_mlp_expansion: float = 0.5
-    # The 1.0.0 group-norm layout (per last-spatial-axis affine), kept so the
-    # preset builds the same parameters as the published checkpoints.
     fno_norm: str = "group_norm_legacy"
     fno_ada_in_features: int = 8
     fno_factorization: Any | None = None
@@ -225,6 +232,14 @@ class GINODarcy2d(GINOConfig):
     matching field for (its reduction mode is hardcoded per-block in
     `GINO.setup()`, and it only has `out_gno_tanh`), so those two are
     deliberately not repeated here.
+
+    `fno_norm` is `"group_norm_legacy"`, the layout `"group_norm"` had in ScireX
+    1.0.0 (one scale and bias per entry of the last latent axis rather than per
+    channel): the API policy does not let a minor release change "the names or
+    shapes of the parameters a released model creates"
+    (`doc/dev_guide/api_policy.md`), and the preset builds the published Darcy
+    and Darcy physics-only checkpoints. Set `fno_norm="group_norm"` for a
+    per-channel, resolution-independent norm.
     """
 
     data_channels: int = 1
@@ -247,8 +262,6 @@ class GINODarcy2d(GINOConfig):
     fno_n_layers: int = 4
     fno_channel_mlp_expansion: float = 0.5
     fno_ada_in_features: int = 8
-    # The 1.0.0 group-norm layout (per last-spatial-axis affine), kept so the
-    # preset builds the same parameters as the published checkpoints.
     fno_norm: str = "group_norm_legacy"
     fno_factorization: Any | None = None
     fno_rank: float = 0.8

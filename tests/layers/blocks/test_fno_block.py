@@ -556,11 +556,16 @@ def test_FNOBlock_batch_norm_statistics_per_channel() -> None:
     out = np.asarray(out)
     tol = tolerances.atol(1e-4)
     np.testing.assert_allclose(out.mean(axis=(0, 2, 3)), 0.0, rtol=0, atol=tol)
-    np.testing.assert_allclose(out.var(axis=(0, 2, 3)), 1.0, rtol=0, atol=1e-2)
+    var_tol = tolerances.atol(1e-3)
+    np.testing.assert_allclose(out.var(axis=(0, 2, 3)), 1.0, rtol=0, atol=var_tol)
 
 
-@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
-def test_FNOBlock_norm_legacy_layout(norm: str) -> None:
+@pytest.mark.parametrize(
+    "norm, error",
+    # batch_norm_legacy already fails on the running-average update
+    [("group_norm", ScopeParamShapeError), ("batch_norm", TypeError)],
+)
+def test_FNOBlock_norm_legacy_layout(norm: str, error: type[Exception]) -> None:
     """`<norm>_legacy` keeps the 1.0.0 layout: variables of the last spatial size,
     tied to it."""
     block = _norm_block(f"{norm}_legacy", 2)
@@ -569,8 +574,7 @@ def test_FNOBlock_norm_legacy_layout(norm: str) -> None:
     for path, leaf in _norm_leaves(variables).items():
         assert leaf.shape == (24,), path
     assert _apply(block, variables, x).shape == x.shape
-    # batch_norm_legacy already fails on the running-average update
-    with pytest.raises((ScopeParamShapeError, TypeError)):
+    with pytest.raises(error):
         _apply(block, variables, jnp.ones((2, _C, 16, 32)))
 
 
@@ -581,3 +585,45 @@ def test_FNOBlock_norm_legacy_checkpoint_hint(norm: str) -> None:
     old = _norm_block(f"{norm}_legacy", 2).init(jax.random.PRNGKey(1), x)
     with pytest.raises(ValueError, match=f"norm='{norm}_legacy'"):
         _apply(_norm_block(norm, 2), old, x)
+
+
+# Outputs of the 1.0.0 code (commit bedbaca) with norm="group_norm" / "batch_norm"
+# for the block, input and parameters of `test_FNOBlock_norm_legacy_golden`.
+_GOLDEN_1_0_0 = {
+    "group_norm": [
+        -0.31109798, 0.7912917, 1.0314878, 1.1378666, 1.0846041, 1.5791844,
+        -0.00921905, -0.01831686, 1.0856328, 4.2402, 0.6027815, 1.5531278,
+        1.0060265, 0.5043016, -0.52302825, -0.13742864, 0.38836348, 0.98854125,
+        1.8849306, 3.7488978,
+    ],
+    "batch_norm": [
+        0.45510507, 1.0891281, 1.1594136, 0.7865462, 0.6515812, 3.0294304,
+        -0.24654257, -0.574527, 0.51025546, 2.2876062, 1.035126, 3.1968684,
+        1.3450265, -0.14080173, -0.5048475, 0.05565095, 0.9307343, 1.2447678,
+        2.0864813, 2.586186,
+    ],
+}  # fmt: skip
+
+
+def _golden_fill(leaf: jnp.ndarray) -> jnp.ndarray:
+    """Deterministic, RNG-free parameter values (vectors around 1)."""
+    n = np.arange(leaf.size, dtype=np.float64)
+    v = 0.3 * np.sin(1.7 * n + 0.5)
+    if jnp.iscomplexobj(leaf):
+        v = v + 0.2j * np.cos(0.9 * n)
+    if leaf.ndim == 1:
+        v = 1.0 + v
+    return jnp.asarray(v.reshape(leaf.shape), dtype=leaf.dtype)
+
+
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_FNOBlock_norm_legacy_golden(norm: str) -> None:
+    """`<norm>_legacy` reproduces the 1.0.0 outputs of `<norm>`."""
+    block = FNOBlocks(2, 2, (2,), n_layers=1, norm=f"{norm}_legacy")
+    x = jnp.asarray(np.sin(np.arange(20.0) * 0.7).reshape(2, 2, 5), jnp.float32)
+    variables = block.init(jax.random.PRNGKey(0), x)
+    params = jax.tree_util.tree_map(_golden_fill, variables["params"])
+    out = np.asarray(_apply(block, {**variables, "params": params}, x)).ravel()
+    np.testing.assert_allclose(
+        out, _GOLDEN_1_0_0[norm], rtol=tolerances.rtol(1e-5), atol=tolerances.atol()
+    )

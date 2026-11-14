@@ -12,30 +12,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `norm="group_norm_legacy"` and `"batch_norm_legacy"` for `FNOBlocks`, `FNO` and
+  `GINO` (`fno_norm=...`), and `legacy_layout=True` for
+  `scirex.layers.common.normalization.BatchNorm`: the 1.0.0 behaviour of
+  `group_norm` / `batch_norm`, kept to run models built or trained with 1.0.0.
+
 ### Fixed
 
 - `FNOBlocks` with `norm="group_norm"` or `"batch_norm"` (so also `FNO` and `GINO`
   through `norm` / `fno_norm`) and `scirex.layers.common.normalization.BatchNorm`
-  now normalise over the channel axis of the channels-first
+  now index their parameters by the channel axis of the channels-first
   `(batch, channels, *spatial)` input. Before, Flax treated the last spatial axis as
-  the feature axis, so the scale, bias and batch statistics had one entry per column
-  of that axis instead of one per channel, and the parameters only worked at the
-  resolution they were created at.
+  the feature axis, so the variables had one entry per column of that axis instead
+  of one per channel and only worked at the resolution they were created at. For
+  `group_norm` (one group) this affected the scale and bias only; its statistics,
+  over all channels and positions, were already right. For `batch_norm` the running
+  mean and variance, and so the normalisation itself, were also per column.
 
 ### Changed
 
-- **Behaviour change:** for these two norms the parameters now have shape
-  `(channels,)` instead of `(last spatial size,)`, and the outputs change. A
-  checkpoint trained with 1.0.0 using them no longer runs with the same `norm`.
-  Applying it raises a `ValueError` naming the fix: build the model with the new
-  `norm="group_norm_legacy"` / `"batch_norm_legacy"` (`fno_norm=...` for GINO),
-  which reproduce the 1.0.0 layout (`BatchNorm(..., legacy_layout=True)` for the
-  layer). If the last spatial size equals the channel count, the shapes match and
-  the old parameters load without an error but give different results; use the
-  legacy option for those too.
-- The `GINODarcy2d` and `GINOPoisson2d` presets and the chip-cooling benchmark now
-  set `fno_norm="group_norm_legacy"`, so they build the same parameters as the
-  published Darcy, Darcy physics-only and chip-cooling checkpoints.
+- **Behaviour change:** for these two norms the scale and bias (and, for
+  `batch_norm`, the batch statistics) now have shape `(channels,)` instead of
+  `(last spatial size,)`. A freshly initialised `group_norm` model gives the same
+  outputs as before up to rounding (scale 1, bias 0); trained `group_norm` models
+  and every `batch_norm` model give different ones.
+- `FNO` and `GINO` are now class version 0.2.0. `BaseModel.from_checkpoint` calls the
+  new class hook `_migrate_init_kwargs`, and for a 0.1.0 (1.0.0) checkpoint `FNO` and
+  `GINO` map `norm` / `fno_norm` `"group_norm"` and `"batch_norm"` to the legacy
+  options, so those checkpoints load and give the same outputs as before. The
+  chip-cooling benchmark's `config.json` now has a `"format": 2`, and one without it
+  is rebuilt with the legacy norm in the same way.
+- Parameters in the 1.0.0 layout applied with the per-channel norm (for example a
+  1.0.0 params file restored into a freshly built model) raise a `ValueError` that
+  names the legacy option. If the last spatial size equals the channel count the
+  shapes match, so no error is raised and the outputs are wrong; use the legacy
+  option there too.
+- The `GINODarcy2d` and `GINOPoisson2d` presets and the chip-cooling benchmark set
+  `fno_norm="group_norm_legacy"`. The API policy does not let a minor release change
+  the shapes of the parameters a released preset builds; it also keeps the
+  published Darcy, Darcy physics-only and chip-cooling checkpoints loading.
 
 ## [1.0.0] - 2026-11-12
 
