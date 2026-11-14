@@ -43,6 +43,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from flax.traverse_util import flatten_dict
 
 from scirex.models.gino import GINO
 
@@ -211,6 +212,51 @@ def test_gino_group_norm_forward() -> None:
     model, inputs = _build(coord_dim=3, fno_norm="group_norm")
     out, _ = _init_apply(model, inputs)
     assert list(out.shape) == [1, N_OUT, OUT_CHANNELS]
+
+
+def test_gino_group_norm_per_channel_and_resolution_invariant() -> None:
+    """fno_norm='group_norm' has one scale/bias per FNO channel, so the same params
+    run on a latent grid of another size; a non-square latent grid (6 x 10) keeps
+    both sides distinct from fno_hidden_channels (16)."""
+    model, inputs = _build(coord_dim=2, fno_norm="group_norm")
+
+    def grid(n0: int, n1: int) -> jnp.ndarray:
+        g = jnp.stack(
+            jnp.meshgrid(jnp.linspace(0, 1, n0), jnp.linspace(0, 1, n1), indexing="ij"),
+            axis=-1,
+        )
+        return g[None]
+
+    inputs = dict(inputs, latent_queries=grid(6, 10))
+    out, params = _init_apply(model, inputs)
+    assert list(out.shape) == [1, N_OUT, OUT_CHANNELS]
+    flat = flatten_dict(params)
+    norm_leaves = {k: v for k, v in flat.items() if any("_norm_" in p for p in k)}
+    assert norm_leaves  # 2 layers x 2 norms x (scale, bias)
+    assert len(norm_leaves) == 8
+    for path, leaf in norm_leaves.items():
+        assert leaf.shape == (16,), path
+    wider = dict(inputs, latent_queries=grid(6, 14))
+    other = cast(jnp.ndarray, model.apply(params, **wider))
+    assert list(other.shape) == [1, N_OUT, OUT_CHANNELS]
+
+
+def test_gino_group_norm_legacy_layout() -> None:
+    """fno_norm='group_norm_legacy' keeps the 1.0.0 params (last latent axis)."""
+    model, inputs = _build(coord_dim=3, fno_norm="group_norm_legacy")
+    _, params = _init_apply(model, inputs)
+    flat = flatten_dict(params)
+    norm_leaves = [v for k, v in flat.items() if any("_norm_" in p for p in k)]
+    assert len(norm_leaves) == 8
+    assert all(leaf.shape == (LATENT_DENSITY,) for leaf in norm_leaves)
+
+
+def test_gino_presets_keep_published_group_norm_layout() -> None:
+    """The presets behind the published checkpoints keep the 1.0.0 layout."""
+    from scirex.config import GINODarcy2d, GINOPoisson2d
+
+    assert GINODarcy2d().fno_norm == "group_norm_legacy"
+    assert GINOPoisson2d().fno_norm == "group_norm_legacy"
 
 
 @pytest.mark.skip(

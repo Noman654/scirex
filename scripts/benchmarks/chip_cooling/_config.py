@@ -134,7 +134,8 @@ RUNS: dict[str, RunConfig] = {
                 fno_n_layers=4,
                 fno_use_channel_mlp=True,
                 fno_channel_mlp_expansion=0.5,
-                fno_norm="group_norm",
+                # 1.0.0 layout: matches the published checkpoint
+                fno_norm="group_norm_legacy",
                 fno_ada_in_features=8,
                 fno_factorization=None,
                 fno_rank=0.8,

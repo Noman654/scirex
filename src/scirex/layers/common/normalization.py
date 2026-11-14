@@ -132,8 +132,10 @@ class BatchNorm(nn.Module):
     form of normalization and is effective when batch statistics are a good
     approximation of the overall data distribution.
 
-    For dimensions > 3, the layer automatically flattens spatial dimensions
-    and uses BatchNorm, as high-dimensional batch norm requires flattening.
+    Inputs are channels-first, `(batch, num_features, *spatial)`: statistics,
+    scale and bias are per channel. For dimensions > 3, the layer automatically
+    flattens spatial dimensions and uses BatchNorm, as high-dimensional batch
+    norm requires flattening.
 
     Parameters
     ----------
@@ -157,11 +159,17 @@ class BatchNorm(nn.Module):
             If True, apply learnable bias. Default is True.
         - use_scale : bool, optional
             If True, apply learnable scale. Default is True.
+    legacy_layout : bool, optional
+        Reproduce the ScireX 1.0.0 behaviour, which normalised over the last
+        spatial axis (the flattened spatial axis for n_dim > 3) instead of the
+        channel axis, so statistics and parameters were tied to that axis's
+        size. Only for loading checkpoints trained with 1.0.0. Default is False.
     """
 
     n_dim: int
     num_features: int
     kwargs: Any = None
+    legacy_layout: bool = False
 
     def setup(self) -> None:
         if self.n_dim > 3:
@@ -192,7 +200,13 @@ class BatchNorm(nn.Module):
         # in 4+D, we flatten and use batchnorm on flattened spatial dim
         if self.n_dim >= 4:
             x = x.reshape(size[0], size[1], -1)
-        x = self.norm(x, use_running_average=use_running_average)
+        if self.legacy_layout:
+            x = self.norm(x, use_running_average=use_running_average)
+        else:
+            # flax BatchNorm treats the last axis as features; move channels there
+            x = jnp.moveaxis(x, 1, -1)
+            x = self.norm(x, use_running_average=use_running_average)
+            x = jnp.moveaxis(x, -1, 1)
 
         # if flattening occurred, unflatten
         if self.n_dim >= 4:

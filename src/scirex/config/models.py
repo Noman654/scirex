@@ -201,7 +201,9 @@ class GINOPoisson2d(GINOConfig):
     fno_n_layers: int = 4
     fno_use_channel_mlp: bool = True
     fno_channel_mlp_expansion: float = 0.5
-    fno_norm: str = "group_norm"
+    # The 1.0.0 group-norm layout (per last-spatial-axis affine), kept so the
+    # preset builds the same parameters as the published checkpoints.
+    fno_norm: str = "group_norm_legacy"
     fno_ada_in_features: int = 8
     fno_factorization: Any | None = None
     fno_rank: float = 0.8
@@ -245,7 +247,9 @@ class GINODarcy2d(GINOConfig):
     fno_n_layers: int = 4
     fno_channel_mlp_expansion: float = 0.5
     fno_ada_in_features: int = 8
-    fno_norm: str = "group_norm"
+    # The 1.0.0 group-norm layout (per last-spatial-axis affine), kept so the
+    # preset builds the same parameters as the published checkpoints.
+    fno_norm: str = "group_norm_legacy"
     fno_factorization: Any | None = None
     fno_rank: float = 0.8
     fno_domain_padding: float = 0.0

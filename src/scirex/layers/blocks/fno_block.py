@@ -9,6 +9,8 @@ from typing import Any
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
+from flax.core import unfreeze
+from flax.traverse_util import flatten_dict
 
 from ..._internal.scaling import validate_scaling_factor
 from ..common.channel_mlp import ChannelMLP
@@ -56,7 +58,11 @@ class FNOBlocks(nn.Module):
         by default None
     norm : Literal["ada_in", "group_norm", "instance_norm", "batch_norm"], optional
         Normalization layer to use. Options: "ada_in", "group_norm", "instance_norm",
-        "batch_norm", None, by default None
+        "batch_norm", None, by default None. "group_norm" and "batch_norm" have one
+        scale and bias per channel (axis 1). "group_norm_legacy" and
+        "batch_norm_legacy" reproduce the ScireX 1.0.0 layout, which normalised
+        over the last spatial axis and so ties the parameters to that axis's size;
+        they exist only to load checkpoints trained with 1.0.0.
     ada_in_features : int, optional
         Number of features for adaptive instance norm above, by default None
     preactivation : bool, optional
@@ -260,13 +266,17 @@ class FNOBlocks(nn.Module):
             norm = None
         elif self.norm == "instance_norm":
             norm = [InstanceNorm() for _ in range(self.n_layers * self.n_norms)]
-        elif self.norm == "group_norm":
+        elif self.norm in ("group_norm", "group_norm_legacy"):
             norm = [
                 nn.GroupNorm(num_groups=1) for _ in range(self.n_layers * self.n_norms)
             ]
-        elif self.norm == "batch_norm":
+        elif self.norm in ("batch_norm", "batch_norm_legacy"):
             norm = [
-                BatchNorm(n_dim=self.n_dim, num_features=self.out_channels)
+                BatchNorm(
+                    n_dim=self.n_dim,
+                    num_features=self.out_channels,
+                    legacy_layout=self.norm == "batch_norm_legacy",
+                )
                 for _ in range(self.n_layers * self.n_norms)
             ]
         elif self.norm == "ada_in":
@@ -277,7 +287,8 @@ class FNOBlocks(nn.Module):
         else:
             raise ValueError(
                 f"Got norm={self.norm} but expected None or one of "
-                "[instance_norm, group_norm, batch_norm, ada_in]"
+                "[instance_norm, group_norm, batch_norm, ada_in, "
+                "group_norm_legacy, batch_norm_legacy]"
             )
 
         # Wrap in ComplexValued while the list is still a local variable, then
@@ -345,7 +356,42 @@ class FNOBlocks(nn.Module):
             else:
                 emb = ada_in_embeddings[norm_idx]
             return norm_layer(x, emb)
+        if self.norm == "group_norm":
+            self._check_norm_layout(norm_idx, x.shape[1])
+            # flax norms treat the last axis as features; x is (B, C, *spatial)
+            x = jnp.moveaxis(x, 1, -1)
+            x = norm_layer(x)
+            return jnp.moveaxis(x, -1, 1)
+        if self.norm == "batch_norm":
+            # BatchNorm moves the channel axis itself
+            self._check_norm_layout(norm_idx, x.shape[1])
         return norm_layer(x)
+
+    def _check_norm_layout(self, norm_idx: int, n_channels: int) -> None:
+        """Raise a clear error for norm variables saved in the 1.0.0 layout.
+
+        ScireX 1.0.0 gave "group_norm" / "batch_norm" one scale, bias (and batch
+        statistic) per entry of the last spatial axis. Loading such a checkpoint
+        into the per-channel layout would otherwise fail deep inside flax with
+        an unrelated shape error. Nothing is checked during `init`.
+        """
+        name = f"_norm_{norm_idx}"
+        for collection in ("params", "batch_stats"):
+            tree = self.variables.get(collection, {}).get(name)
+            if tree is None:
+                continue
+            for path, leaf in flatten_dict(unfreeze(tree)).items():
+                if jnp.shape(leaf) != (n_channels,):
+                    raise ValueError(
+                        f"FNOBlocks {collection} '{name}/{'/'.join(path)}' has "
+                        f"shape {jnp.shape(leaf)}, but norm='{self.norm}' expects "
+                        f"one entry per channel, shape ({n_channels},). These "
+                        "variables were most likely trained with ScireX 1.0.0, "
+                        f"whose '{self.norm}' normalised over the last spatial "
+                        "axis instead of the channel axis. To load them, build "
+                        f"the model with norm='{self.norm}_legacy' "
+                        f"(fno_norm='{self.norm}_legacy' for GINO)."
+                    )
 
     def forward_with_postactivation(
         self,

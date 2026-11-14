@@ -86,7 +86,9 @@ class FNO(BaseModel, name="FNO"):
         Non-Linear activation function module to use. Default: nn.gelu
     norm : Literal["ada_in", "group_norm", "instance_norm"], optional
         Normalization layer to use. Options: "ada_in", "group_norm",
-        "instance_norm", None. Default: None
+        "instance_norm", "batch_norm", None. Default: None. The "group_norm_legacy"
+        and "batch_norm_legacy" variants load checkpoints trained with ScireX
+        1.0.0; see `scirex.layers.FNOBlocks`.
     complex_data : bool, optional
         Whether the data is complex-valued. If True, initializes
         complex-valued modules. Default: False

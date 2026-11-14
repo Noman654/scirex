@@ -14,10 +14,14 @@ from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from flax import linen as nn
+from flax.errors import ScopeParamShapeError
+from flax.traverse_util import flatten_dict
 
 from scirex.layers.blocks.fno_block import FNOBlocks, SubModule
+from tests import tolerances
 
 
 def _available_backends() -> list[str]:
@@ -431,3 +435,149 @@ def test_FNOBlock_getitem_and_submodule(backend: str) -> None:
         caller_vars = caller.init(key, x)
         out = cast(jnp.ndarray, caller.apply(caller_vars, x))
         assert out.shape == (2, 3, 16)
+
+
+# ---------------------------------------------------------------------------
+# group_norm / batch_norm act on the channel axis (axis 1), not the last axis
+# ---------------------------------------------------------------------------
+
+# C = 8 differs from every spatial size, so a features-last mistake shows up
+# as a parameter of the last spatial size instead of (C,).
+_C = 8
+_SPATIAL = {1: (24,), 2: (16, 24), 3: (6, 10, 12)}
+
+
+def _norm_block(norm: str, n_dim: int) -> FNOBlocks:
+    return FNOBlocks(
+        in_channels=_C,
+        out_channels=_C,
+        n_modes=(4,) * n_dim,
+        n_layers=1,
+        norm=norm,
+    )
+
+
+def _norm_leaves(variables: Any) -> dict[tuple[str, ...], jnp.ndarray]:
+    """Every variable under a `_norm_i` submodule, keyed by its full path."""
+    flat = flatten_dict(variables)
+    return {k: v for k, v in flat.items() if k[1].startswith("_norm_")}
+
+
+def _apply(block: FNOBlocks, variables: Any, x: jnp.ndarray) -> jnp.ndarray:
+    if "batch_stats" in variables:
+        out, _ = block.apply(variables, x, mutable=["batch_stats"])
+        return cast(jnp.ndarray, out)
+    return cast(jnp.ndarray, block.apply(variables, x))
+
+
+@pytest.mark.parametrize("n_dim", [1, 2, 3])
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_FNOBlock_norm_variables_are_per_channel(norm: str, n_dim: int) -> None:
+    """Norm scale, bias (and batch statistics) have shape (C,)."""
+    x = jax.random.normal(jax.random.PRNGKey(0), (2, _C, *_SPATIAL[n_dim]))
+    variables = _norm_block(norm, n_dim).init(jax.random.PRNGKey(1), x)
+    leaves = _norm_leaves(variables)
+    names = {k[-1] for k in leaves}
+    expected = {"scale", "bias"} | ({"mean", "var"} if norm == "batch_norm" else set())
+    assert names == expected
+    for path, leaf in leaves.items():
+        assert leaf.shape == (_C,), path
+
+
+@pytest.mark.parametrize("n_dim", [1, 2, 3])
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_FNOBlock_norm_resolution_invariant(norm: str, n_dim: int) -> None:
+    """Parameters initialised at one resolution apply at another last-axis size."""
+    block = _norm_block(norm, n_dim)
+    spatial = _SPATIAL[n_dim]
+    x = jax.random.normal(jax.random.PRNGKey(0), (2, _C, *spatial))
+    variables = block.init(jax.random.PRNGKey(1), x)
+    other = (*spatial[:-1], spatial[-1] + 8)
+    y = jax.random.normal(jax.random.PRNGKey(2), (2, _C, *other))
+    out = _apply(block, variables, y)
+    assert out.shape == (2, _C, *other)
+    assert bool(jnp.all(jnp.isfinite(out)))
+
+
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_FNOBlock_norm_scale_acts_on_one_channel(norm: str) -> None:
+    """Scaling scale[c] of the final norm scales output channel c only.
+
+    With one post-activation layer the second norm is the last operation and its
+    bias starts at zero, so scale[c] -> 3 * scale[c] must give exactly 3x the
+    output on channel c and leave the other channels unchanged.
+    """
+    c = 5
+    block = _norm_block(norm, 2)
+    x = jax.random.normal(jax.random.PRNGKey(0), (2, _C, 16, 24))
+    variables = block.init(jax.random.PRNGKey(1), x)
+    base = np.asarray(_apply(block, variables, x))
+
+    params = variables["params"]
+    norm_params = params["_norm_1"]["norm"] if norm == "batch_norm" else None
+    if norm == "batch_norm":
+        scaled = {**norm_params, "scale": norm_params["scale"].at[c].multiply(3.0)}
+        new_norm = {**params["_norm_1"], "norm": scaled}
+    else:
+        scale = params["_norm_1"]["scale"]
+        new_norm = {**params["_norm_1"], "scale": scale.at[c].multiply(3.0)}
+    new_vars = {**variables, "params": {**params, "_norm_1": new_norm}}
+    out = np.asarray(_apply(block, new_vars, x))
+
+    others = [i for i in range(_C) if i != c]
+    tol = tolerances.atol(1e-5)
+    np.testing.assert_allclose(out[:, others], base[:, others], rtol=0, atol=tol)
+    np.testing.assert_allclose(out[:, c], 3.0 * base[:, c], rtol=0, atol=tol)
+    assert np.abs(base[:, c]).max() > 0.1
+
+
+def test_FNOBlock_batch_norm_statistics_per_channel() -> None:
+    """batch_norm normalises each channel over (batch, *spatial)."""
+    block = FNOBlocks(
+        in_channels=_C,
+        out_channels=_C,
+        n_modes=(4, 4),
+        n_layers=1,
+        norm="batch_norm",
+        preactivation=True,
+        fno_skip=None,
+        use_channel_mlp=False,
+    )
+    x = jax.random.normal(jax.random.PRNGKey(0), (4, _C, 16, 24))
+    # channels with very different offsets and spreads
+    x = x * jnp.arange(1, _C + 1)[None, :, None, None] + jnp.arange(_C)[:, None, None]
+    variables = block.init(jax.random.PRNGKey(1), x)
+
+    # preactivation applies gelu then the first norm; capture that norm's output
+    def first_norm(mdl: FNOBlocks, inp: jnp.ndarray) -> jnp.ndarray:
+        return mdl._apply_norm(nn.gelu(inp), 0, None, 0)
+
+    out, _ = block.apply(variables, x, method=first_norm, mutable=["batch_stats"])
+    out = np.asarray(out)
+    tol = tolerances.atol(1e-4)
+    np.testing.assert_allclose(out.mean(axis=(0, 2, 3)), 0.0, rtol=0, atol=tol)
+    np.testing.assert_allclose(out.var(axis=(0, 2, 3)), 1.0, rtol=0, atol=1e-2)
+
+
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_FNOBlock_norm_legacy_layout(norm: str) -> None:
+    """`<norm>_legacy` keeps the 1.0.0 layout: variables of the last spatial size,
+    tied to it."""
+    block = _norm_block(f"{norm}_legacy", 2)
+    x = jax.random.normal(jax.random.PRNGKey(0), (2, _C, 16, 24))
+    variables = block.init(jax.random.PRNGKey(1), x)
+    for path, leaf in _norm_leaves(variables).items():
+        assert leaf.shape == (24,), path
+    assert _apply(block, variables, x).shape == x.shape
+    # batch_norm_legacy already fails on the running-average update
+    with pytest.raises((ScopeParamShapeError, TypeError)):
+        _apply(block, variables, jnp.ones((2, _C, 16, 32)))
+
+
+@pytest.mark.parametrize("norm", ["group_norm", "batch_norm"])
+def test_FNOBlock_norm_legacy_checkpoint_hint(norm: str) -> None:
+    """Applying 1.0.0-layout variables with the fixed norm names the legacy option."""
+    x = jax.random.normal(jax.random.PRNGKey(0), (2, _C, 16, 24))
+    old = _norm_block(f"{norm}_legacy", 2).init(jax.random.PRNGKey(1), x)
+    with pytest.raises(ValueError, match=f"norm='{norm}_legacy'"):
+        _apply(_norm_block(norm, 2), old, x)

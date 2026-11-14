@@ -10,6 +10,33 @@ All notable changes to **ScireX** are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `FNOBlocks` with `norm="group_norm"` or `"batch_norm"` (so also `FNO` and `GINO`
+  through `norm` / `fno_norm`) and `scirex.layers.common.normalization.BatchNorm`
+  now normalise over the channel axis of the channels-first
+  `(batch, channels, *spatial)` input. Before, Flax treated the last spatial axis as
+  the feature axis, so the scale, bias and batch statistics had one entry per column
+  of that axis instead of one per channel, and the parameters only worked at the
+  resolution they were created at.
+
+### Changed
+
+- **Behaviour change:** for these two norms the parameters now have shape
+  `(channels,)` instead of `(last spatial size,)`, and the outputs change. A
+  checkpoint trained with 1.0.0 using them no longer runs with the same `norm`.
+  Applying it raises a `ValueError` naming the fix: build the model with the new
+  `norm="group_norm_legacy"` / `"batch_norm_legacy"` (`fno_norm=...` for GINO),
+  which reproduce the 1.0.0 layout (`BatchNorm(..., legacy_layout=True)` for the
+  layer). If the last spatial size equals the channel count, the shapes match and
+  the old parameters load without an error but give different results; use the
+  legacy option for those too.
+- The `GINODarcy2d` and `GINOPoisson2d` presets and the chip-cooling benchmark now
+  set `fno_norm="group_norm_legacy"`, so they build the same parameters as the
+  published Darcy, Darcy physics-only and chip-cooling checkpoints.
+
 ## [1.0.0] - 2026-11-12
 
 First release of ScireX: a JAX/Flax library of neural operators for scientific machine
@@ -65,4 +92,5 @@ These names still work and emit a `DeprecationWarning`. They are removed in 1.2.
   `scirex.training.optim.adamw_cx`, which handles this correctly). Nothing currently guards
   against building a plain-Optax optimizer over complex parameters by mistake.
 
+[Unreleased]: https://github.com/zenteiq-research/scirex/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/zenteiq-research/scirex/releases/tag/v1.0.0
