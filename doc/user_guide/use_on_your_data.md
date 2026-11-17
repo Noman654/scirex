@@ -121,7 +121,9 @@ Saved runs/fno  (test rel. L2 0.63%)
 ```
 
 The `train` column is the relative L2 error on the training batches, the
-`test` column on the held-out samples, both in the units of your data.
+`test` column on the held-out samples, both in the units of your data. With
+several output channels the error is taken per channel and averaged, so each
+field counts equally whatever its scale.
 
 Check the setup first on a CPU in under a minute: `--smoke` trains a tiny
 model for 2 epochs on the first 32 samples. Its error stays near 100%; it

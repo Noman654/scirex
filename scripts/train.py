@@ -556,12 +556,22 @@ class Pipeline:
 
 
 def rel_l2(pred, true):
-    """Relative L2 error per sample."""
+    """Relative L2 error per sample, averaged over the output channels.
+
+    Each channel is measured against its own norm. Pooling the channels would let
+    the one with the largest values (a pressure in Pa next to a velocity) set both
+    the loss and the reported error, and a small channel would go untrained. A
+    channel that is zero in a sample is measured against the sample's RMS channel
+    norm instead of its own.
+    """
     import jax.numpy as jnp
 
-    b = pred.shape[0]
-    diff = jnp.linalg.norm((pred - true).reshape(b, -1), axis=1)
-    return diff / jnp.maximum(jnp.linalg.norm(true.reshape(b, -1), axis=1), 1e-12)
+    b, c = pred.shape[0], pred.shape[-1]
+    diff = jnp.linalg.norm((pred - true).reshape(b, -1, c), axis=1)
+    norm = jnp.linalg.norm(true.reshape(b, -1, c), axis=1)
+    rms = jnp.linalg.norm(norm, axis=1, keepdims=True) / jnp.sqrt(c)
+    norm = jnp.where(norm > 1e-6 * rms, norm, rms)
+    return jnp.mean(diff / jnp.maximum(norm, 1e-12), axis=-1)
 
 
 # ---------------------------------------------------------------------------
@@ -664,7 +674,7 @@ def train_run(args) -> dict:
     params = jax.device_put(params, replicate)
     opt_state = jax.device_put(tx.init(params), replicate)
 
-    def loss_fn(p, b, y):  # relative L2 in the units of the data
+    def loss_fn(p, b, y):  # per-channel relative L2 in the units of the data
         return jnp.mean(rel_l2(pipe.y_norm.decode(pipe.apply(p, b)), y))
 
     @jax.jit

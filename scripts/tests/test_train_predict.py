@@ -15,6 +15,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tests import tolerances
+
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
@@ -131,6 +133,37 @@ def test_split_is_seeded_and_disjoint(data):
     assert (len(a["y"]), len(b["y"])) == (30, 10)
     np.testing.assert_array_equal(b["y"], b2["y"])
     assert not np.isin(b["y"][:, 5, 5, 0], a["y"][:, 5, 5, 0]).any()
+
+
+def test_rel_l2_counts_each_channel_equally():
+    rng = np.random.default_rng(0)
+    y = rng.standard_normal((2, 8, 8, 2)).astype(np.float32)
+    y[..., 1] = 1000 * y[..., 1] + 300
+    pred = y.copy()
+    pred[..., 0] = 0  # the small channel is entirely wrong
+    np.testing.assert_allclose(
+        np.asarray(tr.rel_l2(pred, y)), 0.5, rtol=tolerances.rtol(1e-6)
+    )
+    one = y[..., :1]
+    pooled = np.linalg.norm((0.9 * one).reshape(2, -1), axis=1) / np.linalg.norm(
+        one.reshape(2, -1), axis=1
+    )
+    np.testing.assert_allclose(
+        np.asarray(tr.rel_l2(0.1 * one, one)), pooled, rtol=tolerances.rtol(1e-6)
+    )
+    mesh = y.reshape(2, 64, 2)  # (samples, points, channels)
+    np.testing.assert_allclose(
+        np.asarray(tr.rel_l2(pred.reshape(2, 64, 2), mesh)),
+        0.5,
+        rtol=tolerances.rtol(1e-6),
+    )
+
+
+def test_rel_l2_stays_finite_for_a_zero_channel():
+    y = np.ones((2, 8, 8, 2), np.float32)
+    y[..., 0] = 0
+    err = np.asarray(tr.rel_l2(y + 0.01, y))
+    assert np.all(err < 0.1)
 
 
 def test_set_values_are_parsed():

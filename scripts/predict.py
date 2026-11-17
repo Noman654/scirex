@@ -33,6 +33,7 @@ from train import (
     configure_devices,
     device_arguments,
     grid_coords,
+    rel_l2,
 )
 
 
@@ -120,11 +121,7 @@ def main(argv=None) -> None:
     np.savez(args.out, y_pred=y_pred)
     print(f"Saved {args.out}  y_pred {y_pred.shape}")
     if "y" in data:
-        y = data["y"].astype(np.float32)
-        b = len(y)
-        err = np.linalg.norm((y_pred - y).reshape(b, -1), axis=1) / np.linalg.norm(
-            y.reshape(b, -1), axis=1
-        )
+        err = np.asarray(rel_l2(y_pred, data["y"].astype(np.float32)))
         print(
             f"relative L2: mean {err.mean():.2%}  median {np.median(err):.2%}  worst {err.max():.2%}"
         )
