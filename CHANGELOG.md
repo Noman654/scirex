@@ -12,16 +12,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/train.py --rel-l2 per-channel` takes the relative L2 error per output channel
+  and averages it, for the loss and the reported error. The default, `pooled`, is the
+  1.0.0 behaviour: one norm over all channels, which lets the channel with the largest
+  values set both, so a channel of small values can go untrained while the run reports
+  a low error. The choice is saved in `metrics.json` and `config.json`, and
+  `scripts/predict.py` reports with the run's choice unless `--rel-l2` is given.
+
 ### Fixed
 
 - `WNO` with `padding_side="symmetric"` now crops the padded output back to the original
   region (`[pad, pad + n)` on each axis) instead of `[0, n)`, which shifted the output by
   `pad` points and dropped the last `pad` points. `padding_side="end"` is unchanged.
-- `scripts/train.py` and `scripts/predict.py` now take the relative L2 error per output
-  channel and average it. The pooled error let the channel with the largest values set
-  the loss and the reported error, so a channel of small values could go untrained while
-  the run reported a low error. Single-channel results are unchanged; multi-channel
-  `test_rel_l2_*` values in `metrics.json` are not comparable with 1.0.0 runs.
 
 ## [1.0.0] - 2026-11-12
 

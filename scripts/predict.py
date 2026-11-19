@@ -106,6 +106,11 @@ def main(argv=None) -> None:
     )
     p.add_argument("--out", default="predictions.npz")
     p.add_argument("--batch-size", type=int, default=16)
+    p.add_argument(
+        "--rel-l2",
+        choices=("pooled", "per-channel"),
+        help="how the printed error is taken (default: as the run was trained)",
+    )
     device_arguments(p)
     args = p.parse_args(argv)
     configure_devices(
@@ -121,9 +126,13 @@ def main(argv=None) -> None:
     np.savez(args.out, y_pred=y_pred)
     print(f"Saved {args.out}  y_pred {y_pred.shape}")
     if "y" in data:
-        err = np.asarray(rel_l2(y_pred, data["y"].astype(np.float32)))
+        options = json.loads((Path(args.run) / "config.json").read_text())["options"]
+        mode = args.rel_l2 or options.get("rel_l2", "pooled")
+        err = np.asarray(
+            rel_l2(y_pred, data["y"].astype(np.float32), mode == "per-channel")
+        )
         print(
-            f"relative L2: mean {err.mean():.2%}  median {np.median(err):.2%}  worst {err.max():.2%}"
+            f"relative L2 ({mode}): mean {err.mean():.2%}  median {np.median(err):.2%}  worst {err.max():.2%}"
         )
 
 
